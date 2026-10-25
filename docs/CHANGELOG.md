@@ -2,6 +2,7 @@ Changelog for *Blade* project
 
 ## (TBD)
 
+- graphics: Metal BLAS builds and refits apply geometry transforms, requiring macOS 13+ / iOS 16+; upload `AccelerationStructureTransform` values for backend-correct matrix packing
 - render: size ray-tracing resource tables and scene allocation limits to the device's reported indirect-array capacity; graphics array bindings pad to the actual pipeline layout count
 - graphics: Metal supports sampled-texture and storage-buffer binding arrays through argument tables, reported by `Capabilities::binding_array`; partially filled arrays repeat their resources to fill the declared length
 - graphics: `Capabilities::compute_binding_limits` always reports `ComputeBindingLimits`, including separate storage-buffer, plain-data, combined-slot, bind-group, range, and indirect-array limits

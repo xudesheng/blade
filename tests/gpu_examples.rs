@@ -206,6 +206,255 @@ impl EnvMapSampler {
     }
 }
 
+#[cfg(not(gles))]
+#[derive(blade_macros::ShaderData)]
+struct GeometryTransformData {
+    acc_struct: gpu::AccelerationStructure,
+    rays: gpu::BufferPiece,
+    hits: gpu::BufferPiece,
+}
+
+/// Test geometry transforms independently of shading, including a private
+/// transform buffer, a nonzero offset, TLAS composition, and a BLAS refit.
+#[cfg(not(gles))]
+#[test]
+#[ignore = "requires a working GPU context with ray tracing"]
+fn geometry_transform_ray_query() {
+    if cfg!(target_os = "macos") && std::env::var_os("CI").is_some() {
+        println!("Skipping: acceleration structure tests are disabled on macOS CI");
+        return;
+    }
+    let context = unsafe {
+        gpu::Context::init(gpu::ContextDesc {
+            ray_tracing: true,
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    if !context
+        .capabilities()
+        .ray_query
+        .contains(gpu::ShaderVisibility::COMPUTE)
+    {
+        println!("Skipping: ray_query compute not supported");
+        return;
+    }
+    let upload = |name, size| {
+        context.create_buffer(gpu::BufferDesc {
+            name,
+            size,
+            memory: gpu::Memory::Shared,
+        })
+    };
+    let vertex_buffer = upload("triangle", 36);
+    unsafe {
+        let vertices = slice::from_raw_parts_mut(vertex_buffer.data().cast::<f32>(), 9);
+        vertices.copy_from_slice(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    }
+    context.sync_buffer(vertex_buffer.into(), 36, gpu::BufferTarget::Data);
+    let transform_size = std::mem::size_of::<gpu::AccelerationStructureTransform>() as u64;
+    let transform_stage = upload("transform upload", transform_size * 2);
+    let transform_buffer = context.create_buffer(gpu::BufferDesc {
+        name: "private geometry transform",
+        size: transform_size * 2,
+        memory: gpu::Memory::Device,
+    });
+    let mesh = gpu::AccelerationStructureMesh {
+        vertex_data: vertex_buffer.into(),
+        vertex_format: gpu::VertexFormat::F32Vec3,
+        vertex_stride: 12,
+        vertex_count: 3,
+        index_data: gpu::Buffer::default().into(),
+        index_type: None,
+        triangle_count: 1,
+        transform_data: gpu::Buffer::default().into(),
+        is_opaque: true,
+    };
+    let meshes = [
+        mesh.clone(),
+        gpu::AccelerationStructureMesh {
+            transform_data: transform_buffer.at(transform_size),
+            ..mesh
+        },
+    ];
+    let blas_sizes = context.get_bottom_level_acceleration_structure_sizes(&meshes);
+    let blas = context.create_acceleration_structure(gpu::AccelerationStructureDesc {
+        name: "geometry transform BLAS",
+        ty: gpu::AccelerationStructureType::BottomLevel,
+        size: blas_sizes.data,
+        updatable: true,
+    });
+    let to_transform = |matrix: glam::Mat4| -> gpu::Transform {
+        let rows = matrix.transpose().to_cols_array_2d();
+        [rows[0], rows[1], rows[2]].into()
+    };
+    let instance_matrix = glam::Mat4::from_scale_rotation_translation(
+        glam::vec3(0.8, 1.4, 1.2),
+        glam::Quat::from_rotation_x(0.4),
+        glam::vec3(1.0, -2.0, 3.0),
+    );
+    let instance_buffer = context.create_acceleration_structure_instance_buffer(
+        &[gpu::AccelerationStructureInstance {
+            transform: to_transform(instance_matrix),
+            ..Default::default()
+        }],
+        &[blas],
+    );
+    let tlas_sizes = context.get_top_level_acceleration_structure_sizes(1);
+    let tlas = context.create_acceleration_structure(gpu::AccelerationStructureDesc {
+        name: "geometry transform TLAS",
+        ty: gpu::AccelerationStructureType::TopLevel,
+        size: tlas_sizes.data,
+        updatable: false,
+    });
+    let scratch = context.create_buffer(gpu::BufferDesc {
+        name: "AS scratch",
+        size: blas_sizes.scratch.max(tlas_sizes.scratch),
+        memory: gpu::Memory::Device,
+    });
+    let rays = upload("rays", 6 * 32);
+    let hits = upload("hits", 6 * 16);
+    let shader = context.create_shader(gpu::ShaderDesc {
+        source: include_str!("shaders/geometry_transform.wgsl"),
+        naga_module: None,
+    });
+    let layout = GeometryTransformData::layout();
+    let mut pipeline = context.create_compute_pipeline(gpu::ComputePipelineDesc {
+        name: "geometry transform query",
+        data_layouts: &[&layout],
+        compute: shader.at("main"),
+    });
+    let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
+        name: "geometry transform test",
+        buffer_count: 1,
+        manual_barriers: false,
+    });
+    for (phase, geometry_matrix) in [
+        glam::Mat4::from_scale_rotation_translation(
+            glam::vec3(1.7, 0.6, 2.3),
+            glam::Quat::from_euler(glam::EulerRot::XYZ, 0.2, -0.4, 0.7),
+            glam::vec3(4.0, 1.0, 2.0),
+        ),
+        glam::Mat4::from_scale_rotation_translation(
+            glam::vec3(0.7, 2.1, 0.8),
+            glam::Quat::from_euler(glam::EulerRot::XYZ, 0.4, 0.2, -0.3),
+            glam::vec3(7.0, -2.0, 1.0),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // Poison the unused first slot to catch an ignored transform buffer offset.
+        let packed = [
+            bytemuck::Zeroable::zeroed(),
+            gpu::AccelerationStructureTransform::from(to_transform(geometry_matrix)),
+        ];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                packed.as_ptr(),
+                transform_stage
+                    .data()
+                    .cast::<gpu::AccelerationStructureTransform>(),
+                packed.len(),
+            );
+        }
+        let mut ray_data = Vec::new();
+        let mut expected = Vec::new();
+        for (geometry_index, geometry) in [glam::Mat4::IDENTITY, geometry_matrix]
+            .into_iter()
+            .enumerate()
+        {
+            let world = instance_matrix * geometry;
+            let normal = world
+                .transform_vector3(glam::Vec3::X)
+                .cross(world.transform_vector3(glam::Vec3::Y))
+                .normalize();
+            for (u, v) in [(0.2, 0.3), (0.8, 0.1), (1.2, 0.3)] {
+                let target = world.transform_point3(glam::vec3(u, v, 0.0));
+                ray_data.push((target + normal * 5.0).extend(0.0).to_array());
+                ray_data.push((-normal).extend(0.0).to_array());
+                expected.push(if u + v < 1.0 {
+                    [5.0, u, v, geometry_index as f32]
+                } else {
+                    [-1.0; 4]
+                });
+            }
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                ray_data.as_ptr(),
+                rays.data().cast::<[f32; 4]>(),
+                ray_data.len(),
+            );
+        }
+        context.sync_buffer(
+            transform_stage.into(),
+            transform_stage.size(),
+            gpu::BufferTarget::Data,
+        );
+        context.sync_buffer(rays.into(), rays.size(), gpu::BufferTarget::Data);
+        encoder.start();
+        if let mut pass = encoder.transfer("upload transform") {
+            pass.copy_buffer_to_buffer(
+                transform_stage.into(),
+                transform_buffer.into(),
+                transform_buffer.size(),
+            );
+        }
+        if let mut pass = encoder.acceleration_structure("BLAS") {
+            if phase == 0 {
+                pass.build_bottom_level(blas, &meshes, scratch.into());
+            } else {
+                pass.update_bottom_level(blas, &meshes, scratch.into());
+            }
+        }
+        if let mut pass = encoder.acceleration_structure("TLAS") {
+            pass.build_top_level(tlas, &[blas], 1, instance_buffer.into(), scratch.into());
+        }
+        if let mut pass = encoder.compute("trace")
+            && let mut pc = pass.with(&pipeline)
+        {
+            pc.bind(
+                0,
+                &GeometryTransformData {
+                    acc_struct: tlas,
+                    rays: rays.into(),
+                    hits: hits.into(),
+                },
+            );
+            pc.dispatch([6, 1, 1]);
+        }
+        let sync = context.submit(&mut encoder);
+        assert!(context.wait_for(&sync, 5000).unwrap());
+        let actual =
+            unsafe { slice::from_raw_parts(hits.data().cast::<[f32; 4]>(), expected.len()) };
+        for (ray, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            assert!(
+                actual
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, e)| (a - e).abs() < 0.0001),
+                "phase {phase}, ray {ray}: {actual:?} != {expected:?}"
+            );
+        }
+    }
+    context.destroy_command_encoder(&mut encoder);
+    context.destroy_compute_pipeline(&mut pipeline);
+    context.destroy_acceleration_structure(tlas);
+    context.destroy_acceleration_structure(blas);
+    for buffer in [
+        vertex_buffer,
+        transform_stage,
+        transform_buffer,
+        instance_buffer,
+        scratch,
+        rays,
+        hits,
+    ] {
+        context.destroy_buffer(buffer);
+    }
+}
+
 fn run_dispatch_gpu_test(manual_barriers: bool) {
     let context = unsafe { gpu::Context::init(gpu::ContextDesc::default()).unwrap() };
 

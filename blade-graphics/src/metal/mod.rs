@@ -866,6 +866,10 @@ fn make_bottom_level_acceleration_structure_desc(
     meshes: &[crate::AccelerationStructureMesh],
     updatable: bool,
 ) -> Retained<metal::MTLPrimitiveAccelerationStructureDescriptor> {
+    assert!(
+        objc2::available!(macos = 13.0, ios = 16.0),
+        "Metal geometry transforms require macOS 13+ or iOS 16+"
+    );
     let mut geometry_descriptors = Vec::with_capacity(meshes.len());
     for mesh in meshes {
         geometry_descriptors.push(unsafe {
@@ -880,16 +884,11 @@ fn make_bottom_level_acceleration_structure_desc(
                 descriptor.setIndexBufferOffset(mesh.index_data.offset as usize);
                 descriptor.setIndexType(map_index_type(index_type));
             }
-            //TODO: requires macOS-13 ?
-            if false {
-                let (_, attribute_format) = map_vertex_format(mesh.vertex_format);
-                descriptor.setVertexFormat(attribute_format);
-                if !mesh.transform_data.buffer.raw.is_null() {
-                    descriptor
-                        .setTransformationMatrixBuffer(Some(mesh.transform_data.buffer.as_ref()));
-                    descriptor
-                        .setTransformationMatrixBufferOffset(mesh.transform_data.offset as usize);
-                }
+            let (_, attribute_format) = map_vertex_format(mesh.vertex_format);
+            descriptor.setVertexFormat(attribute_format);
+            if !mesh.transform_data.buffer.raw.is_null() {
+                descriptor.setTransformationMatrixBuffer(Some(mesh.transform_data.buffer.as_ref()));
+                descriptor.setTransformationMatrixBufferOffset(mesh.transform_data.offset as usize);
             }
             Retained::cast_unchecked(descriptor)
         });

@@ -28,6 +28,15 @@
 pub use naga::{StorageAccess, VectorSize, back::PipelineConstants};
 pub type Transform = mint::RowMatrix3x4<f32>;
 
+/// A geometry transform packed for the active graphics backend.
+///
+/// Convert from [`Transform`] before uploading to
+/// [`AccelerationStructureMesh::transform_data`]. The GPU representation is
+/// backend-specific (column-major on Metal, row-major on Vulkan).
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct AccelerationStructureTransform([f32; 12]);
+
 pub const IDENTITY_TRANSFORM: Transform = mint::RowMatrix3x4 {
     x: mint::Vector4 {
         x: 1.0,
@@ -930,6 +939,8 @@ pub struct AccelerationStructureMesh {
     pub index_data: BufferPiece,
     pub index_type: Option<IndexType>,
     pub triangle_count: u32,
+    /// An uploaded [`AccelerationStructureTransform`], or a default buffer for
+    /// the identity transform. The offset must be a multiple of 16 bytes.
     pub transform_data: BufferPiece,
     pub is_opaque: bool,
 }
