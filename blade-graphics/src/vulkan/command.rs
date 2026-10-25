@@ -288,7 +288,61 @@ impl super::CommandEncoder {
         }
     }
 
+    pub fn try_start_native(&mut self) -> Result<(), super::NativeError> {
+        self.buffers.rotate_left(1);
+        let cmd_buf = self.buffers.first_mut().unwrap();
+        self.device
+            .try_reset_descriptor_pool(&mut cmd_buf.descriptor_pool)?;
+
+        let vk_info = vk::CommandBufferBeginInfo {
+            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            ..Default::default()
+        };
+        unsafe {
+            self.device
+                .core
+                .begin_command_buffer(cmd_buf.raw, &vk_info)?;
+        }
+
+        if let Some(ref timing) = self.device.timing {
+            self.timings.clear();
+            if !cmd_buf.timed_pass_names.is_empty() {
+                let mut timestamps = [0u64; super::QUERY_POOL_SIZE];
+                unsafe {
+                    self.device.core.get_query_pool_results(
+                        cmd_buf.query_pool,
+                        0,
+                        &mut timestamps[..cmd_buf.timed_pass_names.len() + 1],
+                        vk::QueryResultFlags::TYPE_64,
+                    )?;
+                }
+                let mut prev = timestamps[0];
+                for (name, &ts) in cmd_buf
+                    .timed_pass_names
+                    .drain(..)
+                    .zip(timestamps[1..].iter())
+                {
+                    let diff = (ts - prev) as f32 * timing.period;
+                    prev = ts;
+                    self.timings.push((name, Duration::from_nanos(diff as _)));
+                }
+            }
+            unsafe {
+                self.device.core.cmd_reset_query_pool(
+                    cmd_buf.raw,
+                    cmd_buf.query_pool,
+                    0,
+                    super::QUERY_POOL_SIZE as u32,
+                );
+            }
+        }
+        Ok(())
+    }
     pub(super) fn finish(&mut self) -> vk::CommandBuffer {
+        self.try_finish_native().expect("finishing command buffer")
+    }
+
+    pub(super) fn try_finish_native(&mut self) -> Result<vk::CommandBuffer, super::NativeError> {
         self.barrier();
         self.add_marker("finish");
         let cmd_buf = self.buffers.first_mut().unwrap();
@@ -302,9 +356,9 @@ impl super::CommandEncoder {
                     index,
                 );
             }
-            self.device.core.end_command_buffer(cmd_buf.raw).unwrap();
+            self.device.core.end_command_buffer(cmd_buf.raw)?;
         }
-        cmd_buf.raw
+        Ok(cmd_buf.raw)
     }
 
     fn barrier(&mut self) {
@@ -456,57 +510,7 @@ impl crate::traits::CommandEncoder for super::CommandEncoder {
     type Frame = super::Frame;
 
     fn start(&mut self) {
-        self.buffers.rotate_left(1);
-        let cmd_buf = self.buffers.first_mut().unwrap();
-        self.device
-            .reset_descriptor_pool(&mut cmd_buf.descriptor_pool);
-
-        let vk_info = vk::CommandBufferBeginInfo {
-            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-            ..Default::default()
-        };
-        unsafe {
-            self.device
-                .core
-                .begin_command_buffer(cmd_buf.raw, &vk_info)
-                .unwrap();
-        }
-
-        if let Some(ref timing) = self.device.timing {
-            self.timings.clear();
-            if !cmd_buf.timed_pass_names.is_empty() {
-                let mut timestamps = [0u64; super::QUERY_POOL_SIZE];
-                unsafe {
-                    self.device
-                        .core
-                        .get_query_pool_results(
-                            cmd_buf.query_pool,
-                            0,
-                            &mut timestamps[..cmd_buf.timed_pass_names.len() + 1],
-                            vk::QueryResultFlags::TYPE_64,
-                        )
-                        .unwrap();
-                }
-                let mut prev = timestamps[0];
-                for (name, &ts) in cmd_buf
-                    .timed_pass_names
-                    .drain(..)
-                    .zip(timestamps[1..].iter())
-                {
-                    let diff = (ts - prev) as f32 * timing.period;
-                    prev = ts;
-                    self.timings.push((name, Duration::from_nanos(diff as _)));
-                }
-            }
-            unsafe {
-                self.device.core.cmd_reset_query_pool(
-                    cmd_buf.raw,
-                    cmd_buf.query_pool,
-                    0,
-                    super::QUERY_POOL_SIZE as u32,
-                );
-            }
-        }
+        self.try_start_native().expect("starting command buffer");
     }
 
     fn init_texture(&mut self, texture: super::Texture) {

@@ -100,6 +100,13 @@ impl super::Device {
     }
 
     pub(super) fn reset_descriptor_pool(&self, pool: &mut DescriptorPool) {
+        self.try_reset_descriptor_pool(pool)
+            .expect("resetting descriptor pool");
+    }
+    pub(super) fn try_reset_descriptor_pool(
+        &self,
+        pool: &mut DescriptorPool,
+    ) -> Result<(), super::NativeError> {
         for vk_pool in pool.sub_pools.drain(1..) {
             unsafe {
                 self.core.destroy_descriptor_pool(vk_pool, None);
@@ -108,8 +115,8 @@ impl super::Device {
 
         unsafe {
             self.core
-                .reset_descriptor_pool(pool.sub_pools[0], vk::DescriptorPoolResetFlags::empty())
-                .unwrap();
+                .reset_descriptor_pool(pool.sub_pools[0], vk::DescriptorPoolResetFlags::empty())?;
         }
+        Ok(())
     }
 }

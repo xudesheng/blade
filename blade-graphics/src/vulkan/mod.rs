@@ -7,8 +7,10 @@ use std::{mem, num::NonZeroU32, path::PathBuf, ptr, sync::Mutex};
 mod command;
 mod descriptor;
 mod init;
+mod native;
 mod pipeline;
 mod resource;
+pub use native::*;
 mod surface;
 
 const QUERY_POOL_SIZE: usize = crate::limits::PASS_COUNT + 1;
