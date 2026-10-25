@@ -2745,3 +2745,174 @@ fn multi_texture_gpu_test() {
     context.destroy_command_encoder(&mut command_encoder);
     target.destroy(&context);
 }
+
+#[cfg(not(gles))]
+#[test]
+#[ignore = "requires a working GPU context with binding arrays"]
+fn binding_arrays_gpu_test() {
+    #[derive(blade_macros::ShaderData)]
+    struct ArrayData<'a> {
+        textures: &'a gpu::TextureArray<4>,
+        buffers: &'a gpu::BufferArray<4>,
+        output: gpu::BufferPiece,
+        samp: gpu::Sampler,
+    }
+
+    let context = unsafe { gpu::Context::init(gpu::ContextDesc::default()).unwrap() };
+    if !context.capabilities().binding_array {
+        println!("Skipping: binding arrays are unsupported");
+        return;
+    }
+    let shader = context.create_shader(gpu::ShaderDesc {
+        source: include_str!("shaders/binding_arrays.wgsl"),
+        naga_module: None,
+    });
+    let layout = ArrayData::layout();
+    let mut compute = context.create_compute_pipeline(gpu::ComputePipelineDesc {
+        name: "binding-arrays",
+        data_layouts: &[&layout],
+        compute: shader.at("cs_main"),
+    });
+    let format = gpu::TextureFormat::Rgba8Unorm;
+    let target = snapshot::OffscreenTarget::new(
+        &context,
+        gpu::Extent {
+            width: 4,
+            height: 1,
+            depth: 1,
+        },
+        format,
+    );
+    let mut render = context.create_render_pipeline(gpu::RenderPipelineDesc {
+        name: "binding-arrays",
+        data_layouts: &[&layout],
+        vertex: shader.at("vs_main"),
+        vertex_fetches: &[],
+        fragment: Some(shader.at("fs_main")),
+        primitive: gpu::PrimitiveState::default(),
+        depth_stencil: None,
+        color_targets: &[format.into()],
+        multisample_state: gpu::MultisampleState::default(),
+    });
+    let sampler = context.create_sampler(gpu::SamplerDesc::default());
+    let input = context.create_buffer(gpu::BufferDesc {
+        name: "binding-array-input",
+        size: 64,
+        memory: gpu::Memory::Shared,
+    });
+    let output = context.create_buffer(gpu::BufferDesc {
+        name: "binding-array-output",
+        size: 128,
+        memory: gpu::Memory::Shared,
+    });
+    unsafe {
+        let values = slice::from_raw_parts_mut(input.data().cast::<f32>(), 16);
+        values.fill(-100.0);
+        values[4] = 3.0;
+        values[8] = 7.0;
+    }
+    context.sync_buffer(input.into(), input.size(), gpu::BufferTarget::Data);
+    let mut encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
+        name: "binding-arrays",
+        buffer_count: 1,
+        manual_barriers: false,
+    });
+    encoder.start();
+    encoder.init_texture(target.texture);
+    let (green, green_view, green_stage) =
+        make_solid_texture("array-green", [0, 255, 0, 255], &mut encoder, &context);
+    let (blue, blue_view, blue_stage) =
+        make_solid_texture("array-blue", [0, 0, 255, 255], &mut encoder, &context);
+    let mut textures = gpu::TextureArray::new();
+    textures.alloc(green_view);
+    textures.alloc(blue_view);
+    let mut reversed = gpu::TextureArray::new();
+    reversed.alloc(blue_view);
+    reversed.alloc(green_view);
+    let mut buffers = gpu::BufferArray::new();
+    buffers.alloc(input.at(16));
+    buffers.alloc(input.at(32));
+    {
+        let mut pass = encoder.compute("binding-arrays");
+        let mut pc = pass.with(&compute);
+        for (index, array) in [&textures, &reversed].into_iter().enumerate() {
+            pc.bind(
+                0,
+                &ArrayData {
+                    textures: array,
+                    buffers: &buffers,
+                    output: output.at(index as u64 * 64),
+                    samp: sampler,
+                },
+            );
+            pc.dispatch([1, 1, 1]);
+        }
+    }
+    {
+        let mut pass = encoder.render(
+            "binding-arrays",
+            gpu::RenderTargetSet {
+                colors: &[gpu::RenderTarget {
+                    view: target.view,
+                    init_op: gpu::InitOp::Clear(gpu::TextureColor::OpaqueBlack),
+                    finish_op: gpu::FinishOp::Store,
+                }],
+                depth_stencil: None,
+            },
+        );
+        let mut pc = pass.with(&render);
+        pc.bind(
+            0,
+            &ArrayData {
+                textures: &textures,
+                buffers: &buffers,
+                output: output.into(),
+                samp: sampler,
+            },
+        );
+        pc.draw(0, 3, 0, 1);
+    }
+    let pixels = target.read_pixels(&context, &mut encoder);
+    let actual = unsafe { slice::from_raw_parts(output.data().cast::<[f32; 4]>(), 8) };
+    assert_eq!(
+        actual,
+        &[
+            [3.0, 4.0, 3.0, 4.0],
+            [7.0, 7.0, 8.0, 8.0],
+            [3.0, 4.0, 3.0, 4.0],
+            [7.0, 7.0, 8.0, 8.0],
+            [3.0, 3.0, 4.0, 4.0],
+            [7.0, 8.0, 7.0, 8.0],
+            [3.0, 3.0, 4.0, 4.0],
+            [7.0, 8.0, 7.0, 8.0],
+        ]
+    );
+    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+        let expected = if index % 2 == 0 {
+            [0, 255, 64, 255]
+        } else {
+            [0, 0, 255, 255]
+        };
+        for (&actual, expected) in pixel.iter().zip(expected) {
+            assert!(
+                (actual as i32 - expected).abs() <= 1,
+                "pixel {index}: {pixel:?}"
+            );
+        }
+    }
+
+    context.destroy_compute_pipeline(&mut compute);
+    context.destroy_render_pipeline(&mut render);
+    context.destroy_command_encoder(&mut encoder);
+    context.destroy_sampler(sampler);
+    for buffer in [input, output, green_stage, blue_stage] {
+        context.destroy_buffer(buffer);
+    }
+    for view in [green_view, blue_view] {
+        context.destroy_texture_view(view);
+    }
+    for texture in [green, blue] {
+        context.destroy_texture(texture);
+    }
+    target.destroy(&context);
+}

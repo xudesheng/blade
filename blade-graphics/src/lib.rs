@@ -324,13 +324,14 @@ impl CooperativeMatrix {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Capabilities {
     /// Limits for compute pipelines containing storage buffers and plain data.
-    /// `None` means this backend does not yet report these limits.
-    pub compute_binding_limits: Option<ComputeBindingLimits>,
+    /// Zero limits are reported when compute is unavailable.
+    pub compute_binding_limits: ComputeBindingLimits,
     /// Compute pipeline support.
     pub compute: bool,
     /// Native storage fences and coherent storage accesses within a dispatch.
     /// Supported by Vulkan with its memory model and Apple silicon with MSL 3.2.
     /// This provides memory ordering, not workgroup execution progress.
+    /// Publishing storage writes to other workgroups requires `@coherent` buffers.
     pub device_memory_fence: bool,
     /// Maximum shared-memory bytes per compute workgroup, or zero if not reported.
     pub max_compute_shared_memory_size: u32,
@@ -342,10 +343,8 @@ pub struct Capabilities {
     pub subgroup_size: u32,
     /// Indirect draw command support.
     pub indirect_draw: bool,
-    /// Support binding arrays of handles.
+    /// Support binding arrays of sampled textures and storage buffers.
     pub binding_array: bool,
-    /// Support arrays of storage buffers, independently of texture arrays.
-    pub buffer_binding_array: bool,
     /// Which shader stages support ray queries.
     pub ray_query: ShaderVisibility,
     /// Bit mask of supported MSAA sample counts.
@@ -372,13 +371,16 @@ pub struct Capabilities {
 /// Device limits used when composing buffer-based compute pipelines.
 /// Plain data must additionally fit [`limits::PLAIN_DATA_SIZE`] and each
 /// group must fit [`limits::RESOURCES_IN_GROUP`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ComputeBindingLimits {
     /// Indirect buffer arrays occupy one binding and allow at most this many elements.
     /// `None` means each array element consumes a binding.
     pub max_indirect_buffer_array_elements: Option<u32>,
     /// Total storage buffers across all groups of one compute pipeline.
     pub max_storage_buffers: u32,
+    /// Plain-data bindings, guaranteed independently of their sizes.
+    pub max_plain_data_bindings: u32,
     /// Combined storage-buffer and plain-data bindings, after backend reservations.
     pub max_buffer_bindings: u32,
     /// Number of bound shader data groups.
@@ -562,6 +564,7 @@ impl Buffer {
 pub type ResourceIndex = u32;
 /// An array of resources to be used with shader bindings.
 /// The generic argument tells the maximum number of resources.
+/// Populate at least one element before binding; unused slots repeat the elements.
 pub struct ResourceArray<T, const N: ResourceIndex> {
     data: Vec<T>,
     free_list: Vec<ResourceIndex>,
@@ -603,6 +606,8 @@ impl<T, const N: ResourceIndex> std::ops::IndexMut<ResourceIndex> for ResourceAr
         &mut self.data[index as usize]
     }
 }
+/// On Metal, pass runtime element lengths explicitly: `arrayLength` inside
+/// these buffers is not supported.
 pub type BufferArray<const N: ResourceIndex> = ResourceArray<BufferPiece, N>;
 pub type TextureArray<const N: ResourceIndex> = ResourceArray<TextureView, N>;
 pub type AccelerationStructureArray<const N: ResourceIndex> =

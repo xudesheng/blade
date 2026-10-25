@@ -2,6 +2,12 @@ Changelog for *Blade* project
 
 ## (TBD)
 
+- graphics: Metal supports sampled-texture and storage-buffer binding arrays through argument tables, reported by `Capabilities::binding_array`; partially filled arrays repeat their resources to fill the declared length
+- graphics: `Capabilities::compute_binding_limits` always reports `ComputeBindingLimits`, including separate storage-buffer, plain-data, combined-slot, bind-group, range, and indirect-array limits
+- graphics: `Capabilities::device_memory_fence` reports cross-workgroup publication support; declare shared storage buffers `@coherent`, and synchronize workgroups explicitly; Metal requires Apple silicon with MSL 3.2
+- graphics: `PipelineContext::bind_buffer_array` binds an exact runtime layout count; Vulkan rejects mismatched array counts before writing descriptor data, and binding empty resource arrays is rejected
+- graphics: raise `limits::RESOURCES_IN_GROUP` from 8 to 64; device-specific limits still apply
+- graphics: Metal `Buffer::size()` returns the accessible buffer length, not the padded allocation size
 - graphics: Vulkan automatically preserves f16 subnormals when the device supports independent denormal controls
 - graphics: add `CooperativeMatrix::workgroup`, `WorkgroupCooperativeMatrix`, `CooperativeMatrixGranularity`, and `CooperativeMatrixOperand` for flexible workgroup matrix products with f32 accumulators; Vulkan enables `VK_NV_cooperative_matrix2` when supported and checks shader dimensions, invocation counts, and shared memory against device limits
 - graphics: `shader_bfloat16` requires BF16 cooperative matrices, even for storage and conversion alone; Vulkan enables both BF16 features together, and shader validation follows the advertised capability

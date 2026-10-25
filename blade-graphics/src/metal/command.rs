@@ -3,7 +3,7 @@ use objc2_foundation::{NSArray, NSRange, NSString};
 use objc2_metal::{
     self as metal, MTLAccelerationStructureCommandEncoder as _, MTLBlitCommandEncoder,
     MTLBuffer as _, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _,
-    MTLCounterSampleBuffer, MTLRenderCommandEncoder,
+    MTLCounterSampleBuffer, MTLRenderCommandEncoder, MTLTexture as _,
 };
 use std::{
     marker::PhantomData,
@@ -74,8 +74,20 @@ impl crate::ShaderBindable for super::TextureView {
     }
 }
 impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable for &'a crate::TextureArray<N> {
-    fn bind_to(&self, _ctx: &mut super::PipelineContext, _index: u32) {
-        unimplemented!()
+    fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
+        assert!(!self.data.is_empty() && self.data.len() <= N as usize);
+        let ids: Vec<_> = self
+            .data
+            .iter()
+            .cycle()
+            .take(N as usize)
+            .map(|view| view.as_ref().gpuResourceID())
+            .collect();
+        ctx.bind_argument_table(index, &ids);
+        for view in &self.data {
+            let resource = unsafe { &*(view.raw as *const ProtocolObject<dyn metal::MTLResource>) };
+            ctx.use_resource(index, resource);
+        }
     }
 }
 impl crate::ShaderBindable for super::Sampler {
@@ -115,28 +127,51 @@ impl crate::ShaderBindable for crate::BufferPiece {
 
 impl super::PipelineContext<'_> {
     pub fn bind_buffer_array(&mut self, index: u32, pieces: &[crate::BufferPiece]) {
+        self.bind_buffer_array_padded(index, pieces, pieces.len());
+    }
+
+    fn bind_buffer_array_padded(
+        &mut self,
+        index: u32,
+        pieces: &[crate::BufferPiece],
+        count: usize,
+    ) {
+        if self.cs_encoder.is_none() && self.vs_encoder.is_none() && self.fs_encoder.is_none() {
+            return;
+        }
+        assert!(!pieces.is_empty() && pieces.len() <= count);
+        let addresses: Vec<_> = pieces
+            .iter()
+            .cycle()
+            .take(count)
+            .map(|piece| {
+                assert!(piece.offset < piece.buffer.size());
+                assert_eq!(piece.offset % crate::limits::STORAGE_BUFFER_ALIGNMENT, 0);
+                piece.buffer.as_ref().gpuAddress() + piece.offset
+            })
+            .collect();
+        self.bind_argument_table(index, &addresses);
+        for piece in pieces {
+            let resource =
+                unsafe { &*(piece.buffer.raw as *const ProtocolObject<dyn metal::MTLResource>) };
+            self.use_resource(index, resource);
+        }
+    }
+
+    fn bind_argument_table<T>(&mut self, index: u32, entries: &[T]) {
         if self.cs_encoder.is_none() && self.vs_encoder.is_none() && self.fs_encoder.is_none() {
             return;
         }
         assert!(objc2::available!(macos = 13.0, ios = 16.0));
-        assert!(!pieces.is_empty());
-        let addresses: Vec<_> = pieces
-            .iter()
-            .map(|piece| {
-                assert!(piece.offset < piece.buffer.size());
-                piece.buffer.as_ref().gpuAddress() + piece.offset
-            })
-            .collect();
-        let size = addresses.len() * mem::size_of::<u64>();
-        assert!(
-            size <= 4096,
-            "buffer argument table exceeds inline Metal limit"
-        );
+        assert!(!entries.is_empty());
+        assert_eq!(entries.len(), self.array_counts[index as usize] as usize);
+        assert!(entries.len() <= super::MAX_BINDING_ARRAY_ELEMENTS as usize);
+        let size = mem::size_of_val(entries);
         let slot = self.targets[index as usize] as usize;
         // setBytes copies into command-buffer-owned storage, including with
         // unretained command buffers and multiple outstanding recordings.
         unsafe {
-            let data = NonNull::new(addresses.as_ptr() as *mut _).unwrap();
+            let data = NonNull::new(entries.as_ptr() as *mut _).unwrap();
             if let Some(encoder) = self.cs_encoder {
                 encoder.setBytes_length_atIndex(data, size, slot);
             }
@@ -147,25 +182,27 @@ impl super::PipelineContext<'_> {
                 encoder.setFragmentBytes_length_atIndex(data, size, slot);
             }
         }
-        for piece in pieces {
-            let resource: &ProtocolObject<dyn metal::MTLResource> =
-                unsafe { &*(piece.buffer.raw as *const _) };
-            let usage = metal::MTLResourceUsage::Read | metal::MTLResourceUsage::Write;
-            if let Some(encoder) = self.cs_encoder {
-                encoder.useResource_usage(resource, usage);
-            }
-            if let Some(encoder) = self.vs_encoder {
-                encoder.useResource_usage_stages(resource, usage, metal::MTLRenderStages::Vertex);
-            }
-            if let Some(encoder) = self.fs_encoder {
-                encoder.useResource_usage_stages(resource, usage, metal::MTLRenderStages::Fragment);
-            }
+    }
+
+    fn use_resource(&self, index: u32, resource: &ProtocolObject<dyn metal::MTLResource>) {
+        let mut usage = metal::MTLResourceUsage::Read;
+        if self.write_mask & (1 << index) != 0 {
+            usage |= metal::MTLResourceUsage::Write;
+        }
+        if let Some(encoder) = self.cs_encoder {
+            encoder.useResource_usage(resource, usage);
+        }
+        if let Some(encoder) = self.vs_encoder {
+            encoder.useResource_usage_stages(resource, usage, metal::MTLRenderStages::Vertex);
+        }
+        if let Some(encoder) = self.fs_encoder {
+            encoder.useResource_usage_stages(resource, usage, metal::MTLRenderStages::Fragment);
         }
     }
 }
 impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable for &'a crate::BufferArray<N> {
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
-        ctx.bind_buffer_array(index, &self.data);
+        ctx.bind_buffer_array_padded(index, &self.data, N as usize);
     }
 }
 impl crate::ShaderBindable for crate::AccelerationStructure {
@@ -955,6 +992,8 @@ impl crate::traits::PipelineEncoder for super::ComputePipelineContext<'_> {
             vs_encoder: None,
             fs_encoder: None,
             targets: &info.targets,
+            array_counts: &info.array_counts,
+            write_mask: info.write_mask,
         });
     }
 }
@@ -1011,6 +1050,8 @@ impl crate::traits::PipelineEncoder for super::RenderPipelineContext<'_> {
                 None
             },
             targets: &info.targets,
+            array_counts: &info.array_counts,
+            write_mask: info.write_mask,
         });
     }
 }

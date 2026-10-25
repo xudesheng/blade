@@ -16,6 +16,7 @@ mod resource;
 mod surface;
 
 const MAX_TIMESTAMPS: usize = crate::limits::PASS_COUNT + 1;
+const MAX_BINDING_ARRAY_ELEMENTS: u32 = 4096 / std::mem::size_of::<u64>() as u32;
 
 pub struct Surface {
     view: Option<objc2::rc::Retained<objc2::runtime::NSObject>>,
@@ -277,23 +278,6 @@ fn find_timestamp_counter_set(
 
 type RawCommandBuffer = Retained<ProtocolObject<dyn metal::MTLCommandBuffer>>;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn buffer_size_is_accessible_length_not_allocation_size() {
-        let context = unsafe { super::Context::init(crate::ContextDesc::default()) }.unwrap();
-        for size in [37, 49920] {
-            let buffer = context.create_buffer(crate::BufferDesc {
-                name: "accessible length",
-                size,
-                memory: crate::Memory::Device,
-            });
-            assert_eq!(buffer.size(), size);
-            context.destroy_buffer(buffer);
-        }
-    }
-}
-
 pub struct CommandEncoder {
     raw: Option<RawCommandBuffer>,
     name: String,
@@ -308,6 +292,8 @@ pub struct CommandEncoder {
 struct ShaderDataMapping {
     visibility: crate::ShaderVisibility,
     targets: Box<[u32]>,
+    array_counts: Box<[u32]>,
+    write_mask: u64,
 }
 
 #[derive(Debug)]
@@ -390,6 +376,8 @@ pub struct PipelineContext<'a> {
     vs_encoder: Option<&'a ProtocolObject<dyn metal::MTLRenderCommandEncoder>>,
     fs_encoder: Option<&'a ProtocolObject<dyn metal::MTLRenderCommandEncoder>>,
     targets: &'a [u32],
+    array_counts: &'a [u32],
+    write_mask: u64,
 }
 
 pub struct ComputePipelineContext<'a> {
@@ -658,13 +646,14 @@ impl Context {
             // Metal has 31 buffer argument slots. Blade reserves one for its
             // buffer-size table; plain-data bindings consume slots as well.
             // https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
-            compute_binding_limits: Some(crate::ComputeBindingLimits {
-                max_indirect_buffer_array_elements: Some(512),
+            compute_binding_limits: crate::ComputeBindingLimits {
+                max_indirect_buffer_array_elements: Some(MAX_BINDING_ARRAY_ELEMENTS),
                 max_storage_buffers: 30,
+                max_plain_data_bindings: 30,
                 max_buffer_bindings: 30,
                 max_bind_groups: 30,
                 max_storage_buffer_range: device.maxBufferLength() as u64,
-            }),
+            },
             compute: true,
             device_memory_fence: objc2::available!(macos = 15.0, ios = 18.0)
                 && device.supportsFamily(metal::MTLGPUFamily::Apple7),
@@ -672,8 +661,7 @@ impl Context {
             // `threadExecutionWidth` is a property of a compiled pipeline, not the device.
             subgroup_size: 0,
             indirect_draw: true,
-            binding_array: false,
-            buffer_binding_array: objc2::available!(macos = 13.0, ios = 16.0)
+            binding_array: objc2::available!(macos = 13.0, ios = 16.0)
                 && device.argumentBuffersSupport() == metal::MTLArgumentBuffersTier::Tier2,
             ray_query: if device.supportsFamily(metal::MTLGPUFamily::Apple6) {
                 crate::ShaderVisibility::all()

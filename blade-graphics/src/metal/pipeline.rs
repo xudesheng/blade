@@ -140,6 +140,7 @@ fn make_pipeline_layout(
     let mut num_samplers = 0u32;
     let mut num_buffers = reserved_vertex_buffers;
     for layout in bind_group_layouts.iter() {
+        assert!(layout.bindings.len() <= crate::limits::RESOURCES_IN_GROUP as usize);
         let mut targets = Vec::with_capacity(layout.bindings.len());
         for &(_, ref binding) in layout.bindings.iter() {
             targets.push(match *binding {
@@ -156,16 +157,16 @@ fn make_pipeline_layout(
                     num_buffers += 1;
                     num_buffers - 1
                 }
-                crate::ShaderBinding::BufferArray { count } => {
+                crate::ShaderBinding::BufferArray { count }
+                | crate::ShaderBinding::TextureArray { count } => {
                     assert!(
-                        (1..=512).contains(&count),
-                        "Metal buffer array exceeds its inline argument-table limit"
+                        (1..=super::MAX_BINDING_ARRAY_ELEMENTS).contains(&count),
+                        "Metal binding array exceeds its inline argument-table limit"
                     );
                     num_buffers += 1;
                     num_buffers - 1
                 }
-                crate::ShaderBinding::TextureArray { .. }
-                | crate::ShaderBinding::AccelerationStructureArray { .. } => unimplemented!(),
+                crate::ShaderBinding::AccelerationStructureArray { .. } => unimplemented!(),
                 crate::ShaderBinding::AccelerationStructure => {
                     num_buffers += 1;
                     num_buffers - 1
@@ -180,6 +181,16 @@ fn make_pipeline_layout(
         group_mappings.push(super::ShaderDataMapping {
             visibility: crate::ShaderVisibility::empty(),
             targets: targets.into_boxed_slice(),
+            array_counts: layout
+                .bindings
+                .iter()
+                .map(|&(_, binding)| match binding {
+                    crate::ShaderBinding::BufferArray { count }
+                    | crate::ShaderBinding::TextureArray { count } => count,
+                    _ => 0,
+                })
+                .collect(),
+            write_mask: 0,
         });
     }
 
@@ -244,6 +255,12 @@ impl super::Context {
             .zip(pipeline_layout.group_infos.iter())
         {
             group_mapping.visibility = group_info.visibility;
+            group_mapping.write_mask = group_info
+                .binding_access
+                .iter()
+                .enumerate()
+                .filter(|&(_, access)| access.contains(crate::StorageAccess::STORE))
+                .fold(0, |mask, (index, _)| mask | (1 << index));
         }
 
         let mut naga_resources = msl::EntryPointResources::default();
@@ -276,13 +293,13 @@ impl super::Context {
                     },
                     crate::ShaderBinding::Buffer
                     | crate::ShaderBinding::BufferArray { .. }
+                    | crate::ShaderBinding::TextureArray { .. }
                     | crate::ShaderBinding::Plain { .. }
                     | crate::ShaderBinding::AccelerationStructure => msl::BindTarget {
                         buffer: Some(slot as _),
                         ..Default::default()
                     },
-                    crate::ShaderBinding::TextureArray { .. }
-                    | crate::ShaderBinding::AccelerationStructureArray { .. } => todo!(),
+                    crate::ShaderBinding::AccelerationStructureArray { .. } => todo!(),
                 };
                 naga_resources.resources.insert(res_binding, bind_target);
             }
