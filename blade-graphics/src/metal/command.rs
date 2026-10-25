@@ -39,10 +39,6 @@ fn map_gpu_ns(
 static ASSOCIATED_BLAS_KEY: u8 = 0;
 
 impl<T: bytemuck::Pod> crate::ShaderBindable for T {
-    fn visit(&self, visitor: &mut dyn crate::ShaderDataVisitor, index: u32) {
-        visitor.plain(index, bytemuck::bytes_of(self));
-    }
-
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
         let slot = ctx.targets[index as usize] as _;
         let size = mem::size_of::<T>();
@@ -100,10 +96,6 @@ impl crate::ShaderBindable for super::Sampler {
     }
 }
 impl crate::ShaderBindable for crate::BufferPiece {
-    fn visit(&self, visitor: &mut dyn crate::ShaderDataVisitor, index: u32) {
-        visitor.buffer(index, *self);
-    }
-
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
         let slot = ctx.targets[index as usize] as _;
         let value = Some(self.buffer.as_ref());

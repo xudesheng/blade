@@ -92,10 +92,6 @@ impl super::PipelineContext<'_> {
 }
 
 impl<T: bytemuck::Pod> crate::ShaderBindable for T {
-    fn visit(&self, visitor: &mut dyn crate::ShaderDataVisitor, index: u32) {
-        visitor.plain(index, bytemuck::bytes_of(self));
-    }
-
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
         if ctx.inline_uniform_mask & (1 << index) != 0 {
             // Inline uniform block mode: write raw data directly
@@ -176,10 +172,6 @@ impl crate::ShaderBindable for super::Sampler {
     }
 }
 impl crate::ShaderBindable for crate::BufferPiece {
-    fn visit(&self, visitor: &mut dyn crate::ShaderDataVisitor, index: u32) {
-        visitor.buffer(index, *self);
-    }
-
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
         ctx.write(
             index,
