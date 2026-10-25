@@ -759,9 +759,9 @@ impl super::Context {
                 let window_ptr = handle.ns_view.as_ptr();
                 #[cfg(target_os = "macos")]
                 let window_ptr = unsafe {
-                    use objc2::{msg_send, runtime::Object};
-                    let layer: *mut Object =
-                        msg_send![handle.ns_view.as_ptr() as *mut Object, layer];
+                    use objc2::{msg_send, runtime::AnyObject};
+                    let layer: *mut AnyObject =
+                        msg_send![handle.ns_view.as_ptr() as *mut AnyObject, layer];
                     layer as *mut ffi::c_void
                 };
                 window_ptr

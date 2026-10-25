@@ -138,10 +138,8 @@ impl super::PipelineContext<'_> {
         pieces: &[crate::BufferPiece],
         count: usize,
     ) {
-        if self.cs_encoder.is_none() && self.vs_encoder.is_none() && self.fs_encoder.is_none() {
-            return;
-        }
         assert!(!pieces.is_empty() && pieces.len() <= count);
+        assert_eq!(count, self.array_counts[index as usize] as usize);
         let addresses: Vec<_> = pieces
             .iter()
             .cycle()
@@ -161,9 +159,6 @@ impl super::PipelineContext<'_> {
     }
 
     fn bind_argument_table<T>(&mut self, index: u32, entries: &[T]) {
-        if self.cs_encoder.is_none() && self.vs_encoder.is_none() && self.fs_encoder.is_none() {
-            return;
-        }
         assert!(objc2::available!(macos = 13.0, ios = 16.0));
         assert!(!entries.is_empty());
         assert_eq!(entries.len(), self.array_counts[index as usize] as usize);
@@ -298,15 +293,23 @@ impl super::TimingState {
             return None;
         }
         self.pass_names.push(label);
-        Some(index)
+        // Keep each pass's end sample separate from the next pass's start.
+        // In particular, completion must not depend on an empty blit encoder.
+        Some(index * 2)
     }
 
     fn resolve(&self, device: &ProtocolObject<dyn metal::MTLDevice>) -> crate::Timing<'_> {
         let begin = self.calibration.expect("no last submission");
         let n = self.submitted_count;
+        if n == 0 {
+            return crate::Timing {
+                passes: Vec::new(),
+                done: begin.cpu_instant,
+            };
+        }
         let ns_data = unsafe {
             self.sample_buffer
-                .resolveCounterRange(NSRange::new(0, n + 1))
+                .resolveCounterRange(NSRange::new(0, n * 2))
                 .unwrap()
         };
         let counters = unsafe {
@@ -321,10 +324,10 @@ impl super::TimingState {
                 .pass_names
                 .iter()
                 .take(n)
-                .zip(counters)
-                .map(|(name, &timestamp)| (name, map_gpu_ns(begin, end, timestamp)))
+                .zip(counters.chunks_exact(2))
+                .map(|(name, samples)| (name, map_gpu_ns(begin, end, samples[0])))
                 .collect(),
-            done: map_gpu_ns(begin, end, counters[n]),
+            done: map_gpu_ns(begin, end, counters[n * 2 - 1]),
         }
     }
 }
@@ -352,27 +355,6 @@ impl super::CommandEncoder {
         self.raw.take().unwrap()
     }
 
-    pub(super) fn write_gpu_done(&mut self) {
-        let Some(ref timing_state) = self.timing_state else {
-            return;
-        };
-        let end_index = timing_state.pass_names.len() - timing_state.submitted_count;
-        let cmd_buf = self.raw.as_mut().unwrap();
-        objc2::rc::autoreleasepool(|_| unsafe {
-            let descriptor = metal::MTLBlitPassDescriptor::new();
-            let sba = descriptor
-                .sampleBufferAttachments()
-                .objectAtIndexedSubscript(0);
-            sba.setSampleBuffer(Some(&timing_state.sample_buffer));
-            sba.setStartOfEncoderSampleIndex(metal::MTLCounterDontSample);
-            sba.setEndOfEncoderSampleIndex(end_index);
-            cmd_buf
-                .blitCommandEncoderWithDescriptor(&descriptor)
-                .unwrap()
-                .endEncoding();
-        });
-    }
-
     pub fn transfer(&mut self, label: &str) -> super::TransferCommandEncoder<'_> {
         self.begin_pass(label);
         let raw = objc2::rc::autoreleasepool(|_| unsafe {
@@ -385,7 +367,7 @@ impl super::CommandEncoder {
                     .objectAtIndexedSubscript(0);
                 sba.setSampleBuffer(Some(&timing_state.sample_buffer));
                 sba.setStartOfEncoderSampleIndex(start);
-                sba.setEndOfEncoderSampleIndex(metal::MTLCounterDontSample);
+                sba.setEndOfEncoderSampleIndex(start + 1);
             }
 
             self.raw
@@ -415,7 +397,7 @@ impl super::CommandEncoder {
                     .objectAtIndexedSubscript(0);
                 sba.setSampleBuffer(Some(&timing_state.sample_buffer));
                 sba.setStartOfEncoderSampleIndex(start);
-                sba.setEndOfEncoderSampleIndex(metal::MTLCounterDontSample);
+                sba.setEndOfEncoderSampleIndex(start + 1);
             }
 
             self.raw
@@ -444,7 +426,7 @@ impl super::CommandEncoder {
                     .objectAtIndexedSubscript(0);
                 sba.setSampleBuffer(Some(&timing_state.sample_buffer));
                 sba.setStartOfEncoderSampleIndex(start);
-                sba.setEndOfEncoderSampleIndex(metal::MTLCounterDontSample);
+                sba.setEndOfEncoderSampleIndex(start + 1);
             }
 
             self.raw
@@ -466,7 +448,7 @@ impl super::CommandEncoder {
         targets: crate::RenderTargetSet,
     ) -> super::RenderCommandEncoder<'_> {
         let raw = objc2::rc::autoreleasepool(|_| {
-            let descriptor = unsafe { metal::MTLRenderPassDescriptor::new() };
+            let descriptor = metal::MTLRenderPassDescriptor::new();
 
             for (i, rt) in targets.colors.iter().enumerate() {
                 let at_descriptor =
@@ -556,7 +538,7 @@ impl super::CommandEncoder {
                         .objectAtIndexedSubscript(0);
                     sba.setSampleBuffer(Some(&timing_state.sample_buffer));
                     sba.setStartOfVertexSampleIndex(start);
-                    sba.setEndOfFragmentSampleIndex(metal::MTLCounterDontSample);
+                    sba.setEndOfFragmentSampleIndex(start + 1);
                 }
             }
 
@@ -588,7 +570,7 @@ impl crate::traits::CommandEncoder for super::CommandEncoder {
         }
 
         let queue = self.queue.lock().unwrap();
-        self.raw = Some(objc2::rc::autoreleasepool(|_| unsafe {
+        self.raw = Some(objc2::rc::autoreleasepool(|_| {
             use metal::MTLCommandQueue as _;
             let cmd_buf = queue.commandBufferWithUnretainedReferences().unwrap();
             if !self.name.is_empty() {
@@ -989,7 +971,7 @@ impl crate::traits::PipelineEncoder for super::ComputePipelineContext<'_> {
 
         data.fill(super::PipelineContext {
             cs_encoder: if info.visibility.contains(crate::ShaderVisibility::COMPUTE) {
-                Some(self.encoder.as_ref())
+                Some(self.encoder)
             } else {
                 None
             },
@@ -1044,12 +1026,12 @@ impl crate::traits::PipelineEncoder for super::RenderPipelineContext<'_> {
         data.fill(super::PipelineContext {
             cs_encoder: None,
             vs_encoder: if info.visibility.contains(crate::ShaderVisibility::VERTEX) {
-                Some(self.encoder.as_ref())
+                Some(self.encoder)
             } else {
                 None
             },
             fs_encoder: if info.visibility.contains(crate::ShaderVisibility::FRAGMENT) {
-                Some(self.encoder.as_ref())
+                Some(self.encoder)
             } else {
                 None
             },

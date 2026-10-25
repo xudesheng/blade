@@ -15,7 +15,7 @@ mod pipeline;
 mod resource;
 mod surface;
 
-const MAX_TIMESTAMPS: usize = crate::limits::PASS_COUNT + 1;
+const MAX_TIMESTAMPS: usize = crate::limits::PASS_COUNT * 2;
 const MAX_BINDING_ARRAY_ELEMENTS: u32 = 4096 / std::mem::size_of::<u64>() as u32;
 
 pub struct Surface {
@@ -535,7 +535,7 @@ fn new_command_queue(
         if qos {
             let _: () = unsafe { objc2::msg_send![&*descriptor, setQosClass: QOS_CLASS_UTILITY] };
         }
-        let queue = unsafe { device.newCommandQueueWithDescriptor(&descriptor) };
+        let queue = device.newCommandQueueWithDescriptor(&descriptor);
         applied |= qos && queue.is_some();
         queue
     } else {
@@ -779,18 +779,14 @@ impl crate::traits::CommandDevice for Context {
                 desc.setSampleCount(MAX_TIMESTAMPS);
                 desc
             };
-            unsafe {
-                csb_desc.setLabel(&objc2_foundation::NSString::from_str(&format!(
-                    "{}/counter",
-                    desc.name
-                )));
-            }
+            csb_desc.setLabel(&objc2_foundation::NSString::from_str(&format!(
+                "{}/counter",
+                desc.name
+            )));
             Some(TimingState {
-                sample_buffer: unsafe {
-                    device
-                        .newCounterSampleBufferWithDescriptor_error(&csb_desc)
-                        .unwrap()
-                },
+                sample_buffer: device
+                    .newCounterSampleBufferWithDescriptor_error(&csb_desc)
+                    .unwrap(),
                 pass_names: Default::default(),
                 submitted_count: 0,
                 calibration: None,
@@ -814,9 +810,7 @@ impl crate::traits::CommandDevice for Context {
 
     fn submit(&self, encoder: &mut CommandEncoder) -> SyncPoint {
         use metal::MTLCommandBuffer as _;
-        if encoder.timing_state.is_some() {
-            encoder.write_gpu_done();
-            let timing_state = encoder.timing_state.as_mut().unwrap();
+        if let Some(ref mut timing_state) = encoder.timing_state {
             timing_state
                 .pass_names
                 .drain_prefix(timing_state.submitted_count);

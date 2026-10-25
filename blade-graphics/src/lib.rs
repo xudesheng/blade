@@ -330,6 +330,9 @@ impl CooperativeMatrix {
     }
 }
 
+/// Device capabilities. On Metal, shaders must receive runtime storage-buffer
+/// lengths explicitly: WGSL `arrayLength` is not supported for either ordinary
+/// buffer bindings or elements of binding arrays.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Capabilities {
     /// Limits for compute pipelines containing storage buffers and plain data.
@@ -383,7 +386,8 @@ pub struct Capabilities {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ComputeBindingLimits {
-    /// Indirect buffer arrays occupy one binding and allow at most this many elements.
+    /// Indirect binding arrays (buffers and textures) allow at most this many elements.
+    /// A buffer array occupies one buffer binding on these backends.
     /// `None` means each array element consumes a binding.
     pub max_indirect_buffer_array_elements: Option<u32>,
     /// Total storage buffers across all groups of one compute pipeline.

@@ -76,7 +76,7 @@ fn create_stencil_desc(
     read_mask: u32,
     write_mask: u32,
 ) -> Retained<metal::MTLStencilDescriptor> {
-    let desc = unsafe { metal::MTLStencilDescriptor::new() };
+    let desc = metal::MTLStencilDescriptor::new();
     desc.setStencilCompareFunction(super::map_compare_function(face.compare));
     desc.setReadMask(read_mask);
     desc.setWriteMask(write_mask);
@@ -89,7 +89,7 @@ fn create_stencil_desc(
 fn create_depth_stencil_desc(
     state: &crate::DepthStencilState,
 ) -> Retained<metal::MTLDepthStencilDescriptor> {
-    let desc = unsafe { metal::MTLDepthStencilDescriptor::new() };
+    let desc = metal::MTLDepthStencilDescriptor::new();
     desc.setDepthCompareFunction(super::map_compare_function(state.depth_compare));
     desc.setDepthWriteEnabled(state.depth_write_enabled);
 
@@ -142,8 +142,8 @@ fn make_pipeline_layout(
     for layout in bind_group_layouts.iter() {
         assert!(layout.bindings.len() <= crate::limits::RESOURCES_IN_GROUP as usize);
         let mut targets = Vec::with_capacity(layout.bindings.len());
-        for &(_, ref binding) in layout.bindings.iter() {
-            targets.push(match *binding {
+        for &(_, binding) in layout.bindings.iter() {
+            targets.push(match binding {
                 crate::ShaderBinding::Texture => {
                     num_textures += 1;
                     num_textures - 1
@@ -227,7 +227,7 @@ impl super::Context {
         let ep_info = sf.shader.info.get_entry_point(ep_index);
         let _ = sf.shader.source;
 
-        let (mut module, module_info) = sf.shader.resolve_constants(&sf.constants);
+        let (mut module, module_info) = sf.shader.resolve_constants(sf.constants);
         crate::Shader::fill_resource_bindings(
             &mut module,
             &mut pipeline_layout.group_infos,
@@ -339,13 +339,16 @@ impl super::Context {
             "Naga generated shader for entry point '{}' and stage {:?}\n{}",
             sf.entry_point,
             ep.stage,
-            &source
+            source
         );
 
         let source_string = NSString::from_str(&source);
         let options = metal::MTLCompileOptions::new();
         options.setLanguageVersion(self.info.language_version);
-        unsafe { options.setMathMode(metal::MTLMathMode::Fast) };
+        if objc2::available!(macos = 15.0, ios = 18.0) {
+            options.setMathMode(metal::MTLMathMode::Fast);
+        }
+        // Earlier systems default to fastMathEnabled = true.
 
         let library = self
             .device
@@ -512,7 +515,7 @@ impl crate::traits::ShaderDevice for super::Context {
                 None
             };
 
-            let vertex_descriptor = unsafe { metal::MTLVertexDescriptor::new() };
+            let vertex_descriptor = metal::MTLVertexDescriptor::new();
             for (i, vf) in desc.vertex_fetches.iter().enumerate() {
                 unsafe {
                     let buffer_desc = vertex_descriptor.layouts().objectAtIndexedSubscript(i);

@@ -59,6 +59,7 @@ impl super::PipelineContext<'_> {
     /// Bind exactly the buffers in a runtime-sized shader-data layout entry.
     /// Its `ShaderBinding::BufferArray::count` must equal `pieces.len()`.
     pub fn bind_buffer_array(&mut self, index: u32, pieces: &[crate::BufferPiece]) {
+        assert!(!pieces.is_empty(), "binding array must not be empty");
         self.write_array(
             index,
             pieces.iter().map(|piece| vk::DescriptorBufferInfo {
@@ -219,14 +220,12 @@ impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable
     for &'a crate::AccelerationStructureArray<N>
 {
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
-        assert!(self.data.len() <= N as usize);
+        let count = ctx.array_counts[index as usize] as usize;
+        assert!(count <= N as usize);
+        assert!(!self.data.is_empty() && self.data.len() <= count);
         ctx.write_array(
             index,
-            self.data
-                .iter()
-                .map(|accel| accel.raw)
-                .cycle()
-                .take(N as usize),
+            self.data.iter().map(|accel| accel.raw).cycle().take(count),
         );
     }
 }
@@ -1470,6 +1469,34 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::super::{CommandEncoder, PassKind, PassKinds, TimestampCalibration};
+
+    #[test]
+    fn acceleration_structure_array_uses_the_layout_count() {
+        use crate::ShaderBindable as _;
+        use ash::vk::Handle as _;
+        let mut words = [0u64; 2];
+        let mut context = super::super::PipelineContext {
+            update_data: bytemuck::cast_slice_mut(&mut words),
+            template_offsets: &[0],
+            array_counts: &[2],
+            scratch: None,
+            inline_uniform_mask: 0,
+        };
+        let mut array = crate::AccelerationStructureArray::<4>::new();
+        array.alloc(crate::AccelerationStructure {
+            raw: ash::vk::AccelerationStructureKHR::from_raw(7),
+            ..Default::default()
+        });
+        (&array).bind_to(&mut context, 0);
+        context.array_counts = &[0];
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                context.bind_buffer_array(0, &[]);
+            }))
+            .is_err()
+        );
+        assert_eq!(words, [7, 7]);
+    }
 
     #[test]
     fn binding_array_count_is_checked_before_writing() {
