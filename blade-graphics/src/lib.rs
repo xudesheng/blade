@@ -564,16 +564,24 @@ impl Buffer {
 pub type ResourceIndex = u32;
 /// An array of resources to be used with shader bindings.
 /// The generic argument tells the maximum number of resources.
+/// A pipeline layout may bind fewer than this maximum.
 /// Populate at least one element before binding; unused slots repeat the elements.
 pub struct ResourceArray<T, const N: ResourceIndex> {
     data: Vec<T>,
     free_list: Vec<ResourceIndex>,
+    limit: ResourceIndex,
 }
 impl<T, const N: ResourceIndex> ResourceArray<T, N> {
     pub fn new() -> Self {
+        Self::with_limit(N)
+    }
+    /// Limit allocations to a smaller, device-specific shader layout.
+    pub fn with_limit(limit: ResourceIndex) -> Self {
+        assert!(limit <= N);
         Self {
-            data: Vec::with_capacity(N as usize),
+            data: Vec::with_capacity(limit as usize),
             free_list: Vec::new(),
+            limit,
         }
     }
     pub fn alloc(&mut self, value: T) -> ResourceIndex {
@@ -582,7 +590,11 @@ impl<T, const N: ResourceIndex> ResourceArray<T, N> {
             index
         } else {
             let index = self.data.len() as u32;
-            assert!(index < N);
+            assert!(
+                index < self.limit,
+                "resource array exceeds its {}-entry limit",
+                self.limit
+            );
             self.data.push(value);
             index
         }
@@ -593,6 +605,9 @@ impl<T, const N: ResourceIndex> ResourceArray<T, N> {
     pub fn clear(&mut self) {
         self.data.clear();
         self.free_list.clear();
+    }
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 }
 impl<T, const N: ResourceIndex> std::ops::Index<ResourceIndex> for ResourceArray<T, N> {

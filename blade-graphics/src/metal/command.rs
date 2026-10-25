@@ -75,12 +75,14 @@ impl crate::ShaderBindable for super::TextureView {
 }
 impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable for &'a crate::TextureArray<N> {
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
-        assert!(!self.data.is_empty() && self.data.len() <= N as usize);
+        let count = ctx.array_counts[index as usize] as usize;
+        assert!(count <= N as usize);
+        assert!(!self.data.is_empty() && self.data.len() <= count);
         let ids: Vec<_> = self
             .data
             .iter()
             .cycle()
-            .take(N as usize)
+            .take(count)
             .map(|view| view.as_ref().gpuResourceID())
             .collect();
         ctx.bind_argument_table(index, &ids);
@@ -202,7 +204,9 @@ impl super::PipelineContext<'_> {
 }
 impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable for &'a crate::BufferArray<N> {
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
-        ctx.bind_buffer_array_padded(index, &self.data, N as usize);
+        let count = ctx.array_counts[index as usize] as usize;
+        assert!(count <= N as usize);
+        ctx.bind_buffer_array_padded(index, &self.data, count);
     }
 }
 impl crate::ShaderBindable for crate::AccelerationStructure {

@@ -633,7 +633,7 @@ fn snapshot_bunnymark() {
 fn snapshot_ray_query() {
     // Metal acceleration structure APIs can throw uncatchable ObjC exceptions
     // in CI environments, even when the device reports ray tracing support.
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") && std::env::var_os("CI").is_some() {
         println!("Skipping: ray tracing snapshot not supported on macOS CI");
         return;
     }
@@ -1426,7 +1426,7 @@ fn render_ray_traced_grid_configured(
 ) -> Option<Vec<u8>> {
     // Metal acceleration structure APIs can throw uncatchable ObjC exceptions
     // in CI environments, even when the device reports ray tracing support.
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") && std::env::var_os("CI").is_some() {
         println!("Skipping: ray tracing snapshot not supported on macOS CI");
         return None;
     }
@@ -1643,7 +1643,7 @@ fn snapshot_pbr_ray_trace() {
 #[test]
 #[ignore = "requires a working GPU context with ray tracing"]
 fn animated_blas_memory_stays_bounded() {
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") && std::env::var_os("CI").is_some() {
         println!("Skipping: ray tracing stress test not supported on macOS CI");
         return;
     }
@@ -2752,8 +2752,8 @@ fn multi_texture_gpu_test() {
 fn binding_arrays_gpu_test() {
     #[derive(blade_macros::ShaderData)]
     struct ArrayData<'a> {
-        textures: &'a gpu::TextureArray<4>,
-        buffers: &'a gpu::BufferArray<4>,
+        textures: &'a gpu::TextureArray<8>,
+        buffers: &'a gpu::BufferArray<8>,
         output: gpu::BufferPiece,
         samp: gpu::Sampler,
     }
@@ -2767,7 +2767,15 @@ fn binding_arrays_gpu_test() {
         source: include_str!("shaders/binding_arrays.wgsl"),
         naga_module: None,
     });
-    let layout = ArrayData::layout();
+    // A device-specific layout can be smaller than the Rust allocation ceiling.
+    let mut layout = ArrayData::layout();
+    for (_, binding) in &mut layout.bindings {
+        match binding {
+            gpu::ShaderBinding::TextureArray { count }
+            | gpu::ShaderBinding::BufferArray { count } => *count = 4,
+            _ => {}
+        }
+    }
     let mut compute = context.create_compute_pipeline(gpu::ComputePipelineDesc {
         name: "binding-arrays",
         data_layouts: &[&layout],

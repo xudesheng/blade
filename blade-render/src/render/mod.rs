@@ -14,6 +14,33 @@ use std::{collections::HashMap, mem, num::NonZeroU32, ptr};
 const MAX_RESOURCES: u32 = 8192;
 const RADIANCE_FORMAT: blade_graphics::TextureFormat = blade_graphics::TextureFormat::Rgba16Float;
 
+fn resource_limit(gpu: &blade_graphics::Context) -> u32 {
+    gpu.capabilities()
+        .compute_binding_limits
+        .max_indirect_buffer_array_elements
+        .unwrap_or(MAX_RESOURCES)
+        .min(MAX_RESOURCES)
+}
+
+fn ray_data_layout<D: blade_graphics::ShaderData>(
+    gpu: &blade_graphics::Context,
+) -> blade_graphics::ShaderDataLayout {
+    let count = resource_limit(gpu);
+    let mut layout = D::layout();
+    for entry in &mut layout.bindings {
+        match entry.1 {
+            blade_graphics::ShaderBinding::BufferArray {
+                count: ref mut size,
+            }
+            | blade_graphics::ShaderBinding::TextureArray {
+                count: ref mut size,
+            } => *size = count,
+            _ => {}
+        }
+    }
+    layout
+}
+
 fn mat4_transform(t: &blade_graphics::Transform) -> glam::Mat4 {
     glam::Mat4 {
         x_axis: t.x.into(),
@@ -841,7 +868,7 @@ impl ShaderPipelines {
     ) -> blade_graphics::ComputePipeline {
         shader.check_struct_size::<crate::Vertex>();
         shader.check_struct_size::<HitEntry>();
-        let layout = <FillData as blade_graphics::ShaderData>::layout();
+        let layout = ray_data_layout::<FillData>(gpu);
         gpu.create_compute_pipeline(blade_graphics::ComputePipelineDesc {
             name: "fill-gbuf",
             data_layouts: &[&layout],
@@ -857,7 +884,7 @@ impl ShaderPipelines {
         shader.check_struct_size::<MainParams>();
         shader.check_struct_size::<DebugVariance>();
         shader.check_struct_size::<DebugEntry>();
-        let layout = <MainData as blade_graphics::ShaderData>::layout();
+        let layout = ray_data_layout::<MainData>(gpu);
         gpu.create_compute_pipeline(blade_graphics::ComputePipelineDesc {
             name: "ray-trace",
             data_layouts: &[&layout],
@@ -873,7 +900,7 @@ impl ShaderPipelines {
         shader.check_struct_size::<HitEntry>();
         shader.check_struct_size::<CameraParams>();
         shader.check_struct_size::<PathTraceParams>();
-        let layout = <PathTraceData as blade_graphics::ShaderData>::layout();
+        let layout = ray_data_layout::<PathTraceData>(gpu);
         gpu.create_compute_pipeline(blade_graphics::ComputePipelineDesc {
             name: "path-trace",
             data_layouts: &[&layout],
@@ -988,6 +1015,15 @@ impl RayTracer {
     ) -> Self {
         let capabilities = gpu.capabilities();
         assert!(
+            capabilities.binding_array,
+            "ray tracing requires binding arrays"
+        );
+        let resource_limit = resource_limit(gpu);
+        assert!(
+            resource_limit >= 2,
+            "ray tracing requires two dummy textures"
+        );
+        assert!(
             capabilities
                 .ray_query
                 .contains(blade_graphics::ShaderVisibility::COMPUTE)
@@ -1049,9 +1085,9 @@ impl RayTracer {
             env_map: EnvironmentMap::with_pipeline(&dummy, sp.env_prepare),
             dummy,
             hit_buffer: blade_graphics::Buffer::default(),
-            vertex_buffers: blade_graphics::BufferArray::new(),
-            index_buffers: blade_graphics::BufferArray::new(),
-            textures: blade_graphics::TextureArray::new(),
+            vertex_buffers: blade_graphics::BufferArray::with_limit(resource_limit),
+            index_buffers: blade_graphics::BufferArray::with_limit(resource_limit),
+            textures: blade_graphics::TextureArray::with_limit(resource_limit),
             samplers,
             reservoir_size: sp.reservoir_size,
             debug,
@@ -1587,6 +1623,13 @@ impl RayTracer {
                 }
                 geometry_index += 1;
             }
+        }
+
+        if self.index_buffers.is_empty() {
+            self.index_buffers.alloc(self.hit_buffer.at(0));
+        }
+        if self.vertex_buffers.is_empty() {
+            self.vertex_buffers.alloc(self.hit_buffer.at(0));
         }
 
         self.texture_resource_lookup.clear();

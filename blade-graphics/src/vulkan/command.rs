@@ -150,7 +150,9 @@ impl crate::ShaderBindable for super::TextureView {
 }
 impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable for &'a crate::TextureArray<N> {
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
-        assert!(!self.data.is_empty() && self.data.len() <= N as usize);
+        let count = ctx.array_counts[index as usize] as usize;
+        assert!(count <= N as usize);
+        assert!(!self.data.is_empty() && self.data.len() <= count);
         ctx.write_array(
             index,
             self.data
@@ -161,7 +163,7 @@ impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable for &'a crate::Tex
                     image_layout: vk::ImageLayout::GENERAL,
                 })
                 .cycle()
-                .take(N as usize),
+                .take(count),
         );
     }
 }
@@ -191,7 +193,9 @@ impl crate::ShaderBindable for crate::BufferPiece {
 }
 impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable for &'a crate::BufferArray<N> {
     fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
-        assert!(!self.data.is_empty() && self.data.len() <= N as usize);
+        let count = ctx.array_counts[index as usize] as usize;
+        assert!(count <= N as usize);
+        assert!(!self.data.is_empty() && self.data.len() <= count);
         ctx.write_array(
             index,
             self.data
@@ -202,7 +206,7 @@ impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable for &'a crate::Buf
                     range: vk::WHOLE_SIZE,
                 })
                 .cycle()
-                .take(N as usize),
+                .take(count),
         );
     }
 }
