@@ -94,8 +94,8 @@ impl Buffer {
     }
 
     pub fn size(&self) -> u64 {
-        use metal::MTLResource as _;
-        self.as_ref().allocatedSize() as u64
+        use metal::MTLBuffer as _;
+        self.as_ref().length() as u64
     }
 }
 
@@ -276,6 +276,24 @@ fn find_timestamp_counter_set(
 }
 
 type RawCommandBuffer = Retained<ProtocolObject<dyn metal::MTLCommandBuffer>>;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn buffer_size_is_accessible_length_not_allocation_size() {
+        let context = unsafe { super::Context::init(crate::ContextDesc::default()) }.unwrap();
+        for size in [37, 49920] {
+            let buffer = context.create_buffer(crate::BufferDesc {
+                name: "accessible length",
+                size,
+                memory: crate::Memory::Device,
+            });
+            assert_eq!(buffer.size(), size);
+            context.destroy_buffer(buffer);
+        }
+    }
+}
+
 pub struct CommandEncoder {
     raw: Option<RawCommandBuffer>,
     name: String,
