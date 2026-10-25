@@ -22,6 +22,25 @@ The backend is selected automatically based on the host platform:
 | compute | :white_check_mark: | :white_check_mark: | |
 | ray tracing | :white_check_mark: | | |
 
+### Metal
+
+Ray-tracing geometry transforms require macOS 13+ / iOS 16+.
+Pass runtime storage-buffer lengths explicitly to shaders: `arrayLength` is
+currently unsupported on Metal, for both ordinary buffers and binding-array elements.
+
+For a short scene-update profile with the vehicle wheel assets, run from the
+workspace root:
+
+```sh
+BLADE_PROFILE_VEHICLE=1 cargo test --test gpu_examples animated_blas_memory_stays_bounded -- --ignored --nocapture
+```
+
+This measures rigid-instance updates alongside the remaining skinned/refitted geometry
+over 32 frames at 16×16; it is not a full-resolution vehicle FPS benchmark.
+`BLADE_PROFILE_GPU=1` also prints pass timings for the PBR snapshot tests.
+Add it to the vehicle profile command to include per-pass GPU counters; leave it
+unset for CPU+GPU wall timing without counter-resolution overhead.
+
 ### Vulkan
 
 Required instance extensions:

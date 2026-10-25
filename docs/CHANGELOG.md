@@ -2,6 +2,10 @@ Changelog for *Blade* project
 
 ## (TBD)
 
+- render: preserve SVGF edges with shading-normal/material guides, point-to-plane depth tests, previous-hit depth for moving geometry, and temporal luminance variance; normal transforms use the inverse transpose under nonuniform scale
+- render: represent rigid poses shared by a model's unskinned primitives as instance transforms rather than skinning/refitting a BLAS, and reuse identical current/previous vertex-table entries
+- graphics: Metal timing takes completion from a real pass instead of an empty blit encoder, and handles empty submissions; remove redundant unsafe blocks and guard the macOS 15 math-mode API
+- graphics: validate array bindings consistently and pad Vulkan acceleration-structure arrays to the actual layout count; render scene limits account for direct descriptor budgets
 - graphics: Metal BLAS builds and refits apply geometry transforms, requiring macOS 13+ / iOS 16+; upload `AccelerationStructureTransform` values for backend-correct matrix packing
 - render: size ray-tracing resource tables and scene allocation limits to the device's reported indirect-array capacity; graphics array bindings pad to the actual pipeline layout count
 - graphics: Metal supports sampled-texture and storage-buffer binding arrays through argument tables, reported by `Capabilities::binding_array`; partially filled arrays repeat their resources to fill the declared length

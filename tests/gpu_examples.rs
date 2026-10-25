@@ -1,4 +1,4 @@
-#![allow(irrefutable_let_patterns, clippy::chunks_exact_to_as_chunks)]
+#![allow(irrefutable_let_patterns)]
 
 use blade_graphics as gpu;
 use blade_graphics::ShaderData;
@@ -7,6 +7,8 @@ use std::slice;
 #[allow(dead_code)]
 #[path = "../examples/bunnymark/example.rs"]
 mod bunnymark_example;
+#[cfg(not(gles))]
+mod denoiser;
 mod pbr_scene;
 #[cfg(not(gles))]
 #[path = "../examples/ray-query/example.rs"]
@@ -684,6 +686,12 @@ fn last_timing_reports_the_last_submission() {
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     let second = submit(&mut encoder, "second");
+
+    // Empty submissions must not expose an unwritten/stale completion counter.
+    encoder.start();
+    let sync = context.submit(&mut encoder);
+    assert!(context.wait_for(&sync, 5000).unwrap());
+    assert!(encoder.last_timing().passes.is_empty());
 
     context.destroy_command_encoder(&mut encoder);
     context.destroy_compute_pipeline(&mut pipeline);
@@ -1673,6 +1681,7 @@ fn render_ray_traced_grid_configured(
     test_config: RayTraceTestConfig,
     inspect: impl FnOnce(&blade_render::RayTracer, &gpu::Context, &mut gpu::CommandEncoder),
 ) -> Option<Vec<u8>> {
+    let profile_gpu = std::env::var_os("BLADE_PROFILE_GPU").is_some();
     // Metal acceleration structure APIs can throw uncatchable ObjC exceptions
     // in CI environments, even when the device reports ray tracing support.
     if cfg!(target_os = "macos") && std::env::var_os("CI").is_some() {
@@ -1683,6 +1692,7 @@ fn render_ray_traced_grid_configured(
     let context = unsafe {
         match gpu::Context::init(gpu::ContextDesc {
             ray_tracing: true,
+            timing: profile_gpu,
             ..Default::default()
         }) {
             Ok(c) => c,
@@ -1692,12 +1702,9 @@ fn render_ray_traced_grid_configured(
             }
         }
     };
-    if !context
-        .capabilities()
-        .ray_query
-        .contains(gpu::ShaderVisibility::COMPUTE)
-    {
-        println!("Skipping: ray_query compute not supported");
+    let caps = context.capabilities();
+    if !caps.ray_query.contains(gpu::ShaderVisibility::COMPUTE) || !caps.binding_array {
+        println!("Skipping: ray_query compute or binding arrays not supported");
         return None;
     }
 
@@ -1862,6 +1869,32 @@ fn render_ray_traced_grid_configured(
 
     let pixels = target.read_pixels(&context, &mut command_encoder);
 
+    if profile_gpu {
+        let mut totals = std::collections::BTreeMap::<&str, Vec<f64>>::new();
+        let timing = command_encoder.last_timing();
+        for (name, duration) in timing.pass_durations() {
+            totals
+                .entry(name)
+                .or_default()
+                .push(duration.as_secs_f64() * 1000.0);
+        }
+        println!(
+            "GPU profile: {}x{}, {frame_count} frames",
+            size.width, size.height
+        );
+        for (name, mut millis) in totals {
+            millis.sort_by(f64::total_cmp);
+            println!(
+                "  {name}: {:.3} ms/frame, median/pass {:.3}, range {:.3}–{:.3} ({} passes)",
+                millis.iter().sum::<f64>() / frame_count as f64,
+                millis[millis.len() / 2],
+                millis[0],
+                millis[millis.len() - 1],
+                millis.len()
+            );
+        }
+    }
+
     for buffer in temp.buffers {
         context.destroy_buffer(buffer);
     }
@@ -1892,6 +1925,9 @@ fn snapshot_pbr_ray_trace() {
 #[test]
 #[ignore = "requires a working GPU context with ray tracing"]
 fn animated_blas_memory_stays_bounded() {
+    let profile_vehicle = std::env::var_os("BLADE_PROFILE_VEHICLE").is_some();
+    let profile_gpu = std::env::var_os("BLADE_PROFILE_GPU").is_some();
+    let profile_updates = profile_vehicle || profile_gpu;
     if cfg!(target_os = "macos") && std::env::var_os("CI").is_some() {
         println!("Skipping: ray tracing stress test not supported on macOS CI");
         return;
@@ -1899,6 +1935,7 @@ fn animated_blas_memory_stays_bounded() {
     let context = unsafe {
         match gpu::Context::init(gpu::ContextDesc {
             ray_tracing: true,
+            timing: profile_gpu,
             ..Default::default()
         }) {
             Ok(context) => context,
@@ -1914,6 +1951,11 @@ fn animated_blas_memory_stays_bounded() {
         .contains(gpu::ShaderVisibility::COMPUTE)
     {
         println!("Skipping: ray_query compute not supported");
+        return;
+    }
+
+    if !context.capabilities().binding_array {
+        println!("Skipping: binding arrays not supported");
         return;
     }
 
@@ -1946,36 +1988,73 @@ fn animated_blas_memory_stays_bounded() {
             max_debug_lines: 1,
         },
     );
-    let model = harness
-        .asset_hub
-        .models
-        .insert(harness.asset_hub.models.baker.create_model(
-            "animated-blas-triangle",
-            vec![blade_render::ProceduralGeometry {
-                name: "triangle".into(),
-                vertices: vec![
-                    blade_render::Vertex {
-                        position: [-0.25, -0.25, 0.0],
-                        ..Default::default()
-                    },
-                    blade_render::Vertex {
-                        position: [0.25, -0.25, 0.0],
-                        ..Default::default()
-                    },
-                    blade_render::Vertex {
-                        position: [0.0, 0.25, 0.0],
-                        ..Default::default()
-                    },
-                ],
-                indices: vec![0, 1, 2],
+    let make_geometry = || blade_render::ProceduralGeometry {
+        name: "triangle".into(),
+        vertices: vec![
+            blade_render::Vertex {
+                position: [-0.25, -0.25, 0.0],
                 ..Default::default()
-            }],
-        ));
+            },
+            blade_render::Vertex {
+                position: [0.25, -0.25, 0.0],
+                ..Default::default()
+            },
+            blade_render::Vertex {
+                position: [0.0, 0.25, 0.0],
+                ..Default::default()
+            },
+        ],
+        indices: vec![0, 1, 2],
+        ..Default::default()
+    };
+    // Multiple material primitives on one node still share a rigid pose.
+    let procedural_model =
+        harness
+            .asset_hub
+            .models
+            .insert(harness.asset_hub.models.baker.create_model(
+                "animated-blas-triangle",
+                vec![make_geometry(), make_geometry()],
+            ));
+    // Keep a skinned object on the vertex-skinning/BLAS-refit path as well.
+    let (skinned_model, task) = harness.asset_hub.models.load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets/animated_skin.glb"),
+        blade_render::model::Meta {
+            generate_tangents: false,
+            front_face: blade_render::model::FrontFace::CounterClockwise,
+        },
+    );
+    if harness.workers.is_empty() {
+        task.join_active();
+    } else {
+        task.join();
+    }
+    let rigid_model = if profile_vehicle {
+        let (model, task) = harness.asset_hub.models.load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("examples/vehicle/data/wheelRacing.glb"),
+            blade_render::model::Meta {
+                generate_tangents: false,
+                front_face: blade_render::model::FrontFace::CounterClockwise,
+            },
+        );
+        if harness.workers.is_empty() {
+            task.join_active();
+        } else {
+            task.join();
+        }
+        model
+    } else {
+        procedural_model
+    };
+    let models = [rigid_model, skinned_model];
     harness.asset_hub.flush(encoder, &mut temp.buffers);
     pacer.end_frame(&context);
 
     let make_object = |index: usize| {
-        let mut object = blade_render::Object::from(model);
+        let mut object = blade_render::Object::from(
+            models[usize::from(index % OBJECT_COUNT == OBJECT_COUNT - 1)],
+        );
         let slot = index % OBJECT_COUNT;
         let x = (slot % 8) as f32 - 3.5;
         let y = (slot / 8) as f32 - 3.5;
@@ -2012,6 +2091,8 @@ fn animated_blas_memory_stays_bounded() {
         defensive_mis: 0.1,
     };
     let mut late_memory_usage = Vec::new();
+    let mut profile = std::collections::BTreeMap::<String, f64>::new();
+    let frame_loop_start = std::time::Instant::now();
 
     for frame_index in 0..FRAME_COUNT {
         let (encoder, temp) = pacer.begin_frame();
@@ -2035,9 +2116,20 @@ fn animated_blas_memory_stays_bounded() {
                 phase.cos() * 0.1 + 0.25
             };
             object.pose = (frame_index % 8 != 2).then(|| {
-                blade_render::Pose::from_node_matrices(vec![glam::Mat4::from_translation(
-                    glam::Vec3::new(0.0, offset, 0.0),
-                )])
+                let mut translation =
+                    glam::Mat4::from_translation(glam::Vec3::new(0.0, offset, 0.0));
+                if profile_vehicle && object.model == rigid_model {
+                    translation *= glam::Mat4::from_rotation_x(phase);
+                }
+                blade_render::Pose::from_node_matrices(if object.model == skinned_model {
+                    vec![
+                        glam::Mat4::IDENTITY,
+                        glam::Mat4::IDENTITY,
+                        translation * glam::Mat4::from_translation(glam::Vec3::Y),
+                    ]
+                } else {
+                    vec![translation]
+                })
             });
         }
 
@@ -2068,6 +2160,18 @@ fn animated_blas_memory_stays_bounded() {
             None,
         );
         pacer.end_frame(&context);
+        if profile_updates {
+            assert!(
+                context
+                    .wait_for(pacer.last_sync_point().unwrap(), !0)
+                    .unwrap()
+            );
+        }
+        if profile_gpu {
+            for (name, duration) in pacer.last_timing().pass_durations() {
+                *profile.entry(name.to_owned()).or_default() += duration.as_secs_f64() * 1000.0;
+            }
+        }
         for object in &mut objects {
             object.flip();
         }
@@ -2078,6 +2182,18 @@ fn animated_blas_memory_stays_bounded() {
         }
     }
 
+    if profile_updates {
+        println!(
+            "Animated profile CPU+GPU frame loop: {:.3} ms/frame, vehicle={profile_vehicle}",
+            frame_loop_start.elapsed().as_secs_f64() * 1000.0 / FRAME_COUNT as f64
+        );
+    }
+    for (name, millis) in profile {
+        println!(
+            "Animated profile {name}: {:.3} ms/frame",
+            millis / FRAME_COUNT as f64
+        );
+    }
     if let (Some(min), Some(max)) = (
         late_memory_usage.iter().min(),
         late_memory_usage.iter().max(),
