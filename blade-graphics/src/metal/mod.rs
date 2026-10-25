@@ -628,7 +628,9 @@ impl Context {
             capture,
             timestamp_counter_set,
             info: PrivateInfo {
-                language_version: if objc2::available!(macos = 14.0, ios = 17.0) {
+                language_version: if objc2::available!(macos = 15.0, ios = 18.0) {
+                    metal::MTLLanguageVersion::Version3_2
+                } else if objc2::available!(macos = 14.0, ios = 17.0) {
                     metal::MTLLanguageVersion::Version3_1
                 } else {
                     metal::MTLLanguageVersion::Version2_4
@@ -657,18 +659,22 @@ impl Context {
             // buffer-size table; plain-data bindings consume slots as well.
             // https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
             compute_binding_limits: Some(crate::ComputeBindingLimits {
+                max_indirect_buffer_array_elements: Some(512),
                 max_storage_buffers: 30,
                 max_buffer_bindings: 30,
                 max_bind_groups: 30,
                 max_storage_buffer_range: device.maxBufferLength() as u64,
             }),
             compute: true,
-            device_memory_fence: false,
+            device_memory_fence: objc2::available!(macos = 15.0, ios = 18.0)
+                && device.supportsFamily(metal::MTLGPUFamily::Apple7),
             max_compute_shared_memory_size: device.maxThreadgroupMemoryLength() as u32,
             // `threadExecutionWidth` is a property of a compiled pipeline, not the device.
             subgroup_size: 0,
             indirect_draw: true,
             binding_array: false,
+            buffer_binding_array: objc2::available!(macos = 13.0, ios = 16.0)
+                && device.argumentBuffersSupport() == metal::MTLArgumentBuffersTier::Tier2,
             ray_query: if device.supportsFamily(metal::MTLGPUFamily::Apple6) {
                 crate::ShaderVisibility::all()
             } else if device.supportsFamily(metal::MTLGPUFamily::Mac2)

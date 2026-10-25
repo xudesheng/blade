@@ -24,11 +24,14 @@ fn validation_capabilities(device_caps: &super::Capabilities) -> naga::valid::Ca
         device_caps.device_memory_fence,
     );
     caps.set(
-        naga::valid::Capabilities::STORAGE_BUFFER_BINDING_ARRAY
-            | naga::valid::Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY
-            | naga::valid::Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY_NON_UNIFORM_INDEXING
-            | naga::valid::Capabilities::STORAGE_BUFFER_BINDING_ARRAY_NON_UNIFORM_INDEXING,
+        naga::valid::Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY
+            | naga::valid::Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY_NON_UNIFORM_INDEXING,
         device_caps.binding_array,
+    );
+    caps.set(
+        naga::valid::Capabilities::STORAGE_BUFFER_BINDING_ARRAY
+            | naga::valid::Capabilities::STORAGE_BUFFER_BINDING_ARRAY_NON_UNIFORM_INDEXING,
+        device_caps.buffer_binding_array || device_caps.binding_array,
     );
     caps.set(
         naga::valid::Capabilities::RAY_QUERY
@@ -764,6 +767,19 @@ impl super::Shader {
 #[cfg(test)]
 mod tests {
     use super::validation_capabilities;
+
+    #[test]
+    fn buffer_binding_arrays_do_not_enable_texture_arrays() {
+        use naga::valid::Capabilities as C;
+        let mut device = crate::Capabilities::default();
+        assert!(!validation_capabilities(&device).contains(C::STORAGE_BUFFER_BINDING_ARRAY));
+        device.buffer_binding_array = true;
+        let caps = validation_capabilities(&device);
+        assert!(caps.contains(
+            C::STORAGE_BUFFER_BINDING_ARRAY | C::STORAGE_BUFFER_BINDING_ARRAY_NON_UNIFORM_INDEXING
+        ));
+        assert!(!caps.contains(C::TEXTURE_AND_SAMPLER_BINDING_ARRAY));
+    }
 
     const BF16_SOURCE: &str = r#"
 enable wgpu_bfloat16;

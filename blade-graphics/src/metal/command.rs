@@ -1,8 +1,8 @@
-use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSArray, NSRange, NSString};
 use objc2_metal::{
     self as metal, MTLAccelerationStructureCommandEncoder as _, MTLBlitCommandEncoder,
-    MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _,
+    MTLBuffer as _, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _,
     MTLCounterSampleBuffer, MTLRenderCommandEncoder,
 };
 use std::{
@@ -122,13 +122,58 @@ impl crate::ShaderBindable for crate::BufferPiece {
 }
 
 impl super::PipelineContext<'_> {
-    pub fn bind_buffer_array(&mut self, _index: u32, _pieces: &[crate::BufferPiece]) {
-        unimplemented!("buffer binding arrays are unavailable on Metal");
+    pub fn bind_buffer_array(&mut self, index: u32, pieces: &[crate::BufferPiece]) {
+        if self.cs_encoder.is_none() && self.vs_encoder.is_none() && self.fs_encoder.is_none() {
+            return;
+        }
+        assert!(objc2::available!(macos = 13.0, ios = 16.0));
+        assert!(!pieces.is_empty());
+        let addresses: Vec<_> = pieces
+            .iter()
+            .map(|piece| {
+                assert!(piece.offset < piece.buffer.size());
+                piece.buffer.as_ref().gpuAddress() + piece.offset
+            })
+            .collect();
+        let size = addresses.len() * mem::size_of::<u64>();
+        assert!(
+            size <= 4096,
+            "buffer argument table exceeds inline Metal limit"
+        );
+        let slot = self.targets[index as usize] as usize;
+        // setBytes copies into command-buffer-owned storage, including with
+        // unretained command buffers and multiple outstanding recordings.
+        unsafe {
+            let data = NonNull::new(addresses.as_ptr() as *mut _).unwrap();
+            if let Some(encoder) = self.cs_encoder {
+                encoder.setBytes_length_atIndex(data, size, slot);
+            }
+            if let Some(encoder) = self.vs_encoder {
+                encoder.setVertexBytes_length_atIndex(data, size, slot);
+            }
+            if let Some(encoder) = self.fs_encoder {
+                encoder.setFragmentBytes_length_atIndex(data, size, slot);
+            }
+        }
+        for piece in pieces {
+            let resource: &ProtocolObject<dyn metal::MTLResource> =
+                unsafe { &*(piece.buffer.raw as *const _) };
+            let usage = metal::MTLResourceUsage::Read | metal::MTLResourceUsage::Write;
+            if let Some(encoder) = self.cs_encoder {
+                encoder.useResource_usage(resource, usage);
+            }
+            if let Some(encoder) = self.vs_encoder {
+                encoder.useResource_usage_stages(resource, usage, metal::MTLRenderStages::Vertex);
+            }
+            if let Some(encoder) = self.fs_encoder {
+                encoder.useResource_usage_stages(resource, usage, metal::MTLRenderStages::Fragment);
+            }
+        }
     }
 }
 impl<'a, const N: crate::ResourceIndex> crate::ShaderBindable for &'a crate::BufferArray<N> {
-    fn bind_to(&self, _ctx: &mut super::PipelineContext, _index: u32) {
-        unimplemented!()
+    fn bind_to(&self, ctx: &mut super::PipelineContext, index: u32) {
+        ctx.bind_buffer_array(index, &self.data);
     }
 }
 impl crate::ShaderBindable for crate::AccelerationStructure {

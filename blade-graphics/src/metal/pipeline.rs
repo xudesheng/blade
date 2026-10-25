@@ -156,8 +156,15 @@ fn make_pipeline_layout(
                     num_buffers += 1;
                     num_buffers - 1
                 }
+                crate::ShaderBinding::BufferArray { count } => {
+                    assert!(
+                        (1..=512).contains(&count),
+                        "Metal buffer array exceeds its inline argument-table limit"
+                    );
+                    num_buffers += 1;
+                    num_buffers - 1
+                }
                 crate::ShaderBinding::TextureArray { .. }
-                | crate::ShaderBinding::BufferArray { .. }
                 | crate::ShaderBinding::AccelerationStructureArray { .. } => unimplemented!(),
                 crate::ShaderBinding::AccelerationStructure => {
                     num_buffers += 1;
@@ -175,6 +182,11 @@ fn make_pipeline_layout(
             targets: targets.into_boxed_slice(),
         });
     }
+
+    assert!(
+        num_buffers <= 30,
+        "Metal pipeline exceeds buffer argument slots"
+    );
 
     super::PipelineLayout {
         group_mappings: group_mappings.into_boxed_slice(),
@@ -263,13 +275,13 @@ impl super::Context {
                         ..Default::default()
                     },
                     crate::ShaderBinding::Buffer
+                    | crate::ShaderBinding::BufferArray { .. }
                     | crate::ShaderBinding::Plain { .. }
                     | crate::ShaderBinding::AccelerationStructure => msl::BindTarget {
                         buffer: Some(slot as _),
                         ..Default::default()
                     },
                     crate::ShaderBinding::TextureArray { .. }
-                    | crate::ShaderBinding::BufferArray { .. }
                     | crate::ShaderBinding::AccelerationStructureArray { .. } => todo!(),
                 };
                 naga_resources.resources.insert(res_binding, bind_target);

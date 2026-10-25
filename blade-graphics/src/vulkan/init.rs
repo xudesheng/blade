@@ -170,6 +170,7 @@ impl AdapterCapabilities {
     fn compute_binding_limits(&self) -> crate::ComputeBindingLimits {
         let limits = &self.properties.limits;
         crate::ComputeBindingLimits {
+            max_indirect_buffer_array_elements: None,
             max_storage_buffers: limits
                 .max_per_stage_descriptor_storage_buffers
                 .min(limits.max_descriptor_set_storage_buffers),
@@ -187,6 +188,7 @@ impl AdapterCapabilities {
             compute_binding_limits: Some(self.compute_binding_limits()),
             indirect_draw: true,
             binding_array: self.binding_array,
+            buffer_binding_array: self.binding_array,
             ray_query: match self.ray_tracing {
                 Some(_) => crate::ShaderVisibility::all(),
                 None => crate::ShaderVisibility::empty(),
@@ -1841,6 +1843,7 @@ impl super::Context {
             subgroup_size: self.subgroup_size,
             indirect_draw: true,
             binding_array: self.binding_array,
+            buffer_binding_array: self.binding_array,
             ray_query: match self.device.ray_tracing {
                 Some(_) => crate::ShaderVisibility::all(),
                 None => crate::ShaderVisibility::empty(),

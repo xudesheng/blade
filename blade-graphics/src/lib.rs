@@ -329,7 +329,7 @@ pub struct Capabilities {
     /// Compute pipeline support.
     pub compute: bool,
     /// Native storage fences and coherent storage accesses within a dispatch.
-    /// Currently supported by Vulkan with the Vulkan memory model enabled.
+    /// Supported by Vulkan with its memory model and Apple silicon with MSL 3.2.
     /// This provides memory ordering, not workgroup execution progress.
     pub device_memory_fence: bool,
     /// Maximum shared-memory bytes per compute workgroup, or zero if not reported.
@@ -344,6 +344,8 @@ pub struct Capabilities {
     pub indirect_draw: bool,
     /// Support binding arrays of handles.
     pub binding_array: bool,
+    /// Support arrays of storage buffers, independently of texture arrays.
+    pub buffer_binding_array: bool,
     /// Which shader stages support ray queries.
     pub ray_query: ShaderVisibility,
     /// Bit mask of supported MSAA sample counts.
@@ -372,6 +374,9 @@ pub struct Capabilities {
 /// group must fit [`limits::RESOURCES_IN_GROUP`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ComputeBindingLimits {
+    /// Indirect buffer arrays occupy one binding and allow at most this many elements.
+    /// `None` means each array element consumes a binding.
+    pub max_indirect_buffer_array_elements: Option<u32>,
     /// Total storage buffers across all groups of one compute pipeline.
     pub max_storage_buffers: u32,
     /// Combined storage-buffer and plain-data bindings, after backend reservations.
